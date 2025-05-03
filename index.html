@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram 用户状态监控</title>
+    <script src="https://cdn.jsdelivr.net/npm/vue@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+        }
+        .status-online { color: green; }
+        .status-offline { color: red; }
+        .status-hidden { color: gray; }
+        input { padding: 8px; margin: 10px; }
+        button { padding: 8px 16px; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: center;
+        }
+        th { background-color: #f2f2f2; }
+        .auth-container, .track-container { margin: 20px 0; }
+        .tracked-users { margin: 20px 0; }
+        .tracked-users button { margin-left: 10px; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- 登录状态 -->
+        <div v-if="isAuthenticated">
+            <p>欢迎，{{ username }}！ <button @click="logout">登出</button></p>
+            <h2>Telegram 用户状态监控</h2>
+            <!-- 追踪用户管理 -->
+            <div class="track-container">
+                <h3>管理追踪用户</h3>
+                <input v-model="newTrackUserId" placeholder="输入 Telegram 用户 ID" />
+                <button @click="addTrackedUser">添加</button>
+                <div class="tracked-users" v-if="trackedUsers.length">
+                    <h4>已追踪用户</h4>
+                    <div v-for="userId in trackedUsers" :key="userId">
+                        <span>{{ userId }}</span>
+                        <button @click="removeTrackedUser(userId)">删除</button>
+                        <button @click="selectUser(userId)">查看状态</button>
+                    </div>
+                </div>
+                <p v-else>暂无追踪用户</p>
+            </div>
+            <!-- 状态展示 -->
+            <div v-if="statusData">
+                <h3>用户 ID: {{ statusData.user_id }}</h3>
+                <p :class="'status-' + statusData.status">
+                    状态: {{ statusData.status === 'online' ? '在线' : statusData.status === 'offline' ? '离线' : '状态隐藏' }}
+                </p>
+                <p v-if="statusData.last_seen">最后在线: {{ formatDate(statusData.last_seen) }}</p>
+                <p>累计在线时长: {{ statusData.online_duration_minutes }} 分钟</p>
+                <h4>在线时段</h4>
+                <table v-if="statusData.online_sessions.length">
+                    <tr>
+                        <th>开始时间</th>
+                        <th>结束时间</th>
+                        <th>时长（分钟）</th>
+                    </tr>
+                    <tr v-for="session in statusData.online_sessions" :key="session.start_time">
+                        <td>{{ formatDate(session.start_time) }}</td>
+                        <td>{{ formatDate(session.end_time) }}</td>
+                        <td>{{ (session.duration_seconds / 60).toFixed(2) }}</td>
+                    </tr>
+                </table>
+                <p v-else>暂无在线时段记录</p>
+            </div>
+        </div>
+        <!-- 登录/注册页面 -->
+        <div v-else class="auth-container">
+            <h2>{{ isLogin ? '登录' : '注册' }}</h2>
+            <div>
+                <input v-model="authUsername" placeholder="用户名" />
+                <input v-model="authPassword" type="password" placeholder="密码" />
+                <button @click="isLogin ? login() : register()">{{ isLogin ? '登录' : '注册' }}</button>
+            </div>
+            <p>
+                <a href="#" @click.prevent="isLogin = !isLogin">
+                    {{ isLogin ? '没有账户？注册' : '已有账户？登录' }}
+                </a>
+            </p>
+        </div>
+    </div>
+
+    <script>
+        new Vue({
+            el: '#app',
+            data: {
+                isAuthenticated: false,
+                username: '',
+                newTrackUserId: '',
+                trackedUsers: [],
+                statusData: null,
+                intervalId: null,
+                isLogin: true,
+                authUsername: '',
+                authPassword: ''
+            },
+            created() {
+                const token = localStorage.getItem('jwt_token');
+                const storedUsername = localStorage.getItem('username');
+                if (token && storedUsername) {
+                    this.isAuthenticated = true;
+                    this.username = storedUsername;
+                    axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+                    this.fetchTrackedUsers();
+                }
+            },
+            methods: {
+                async register() {
+                    try {
+                        const response = await axios.post('http://localhost:5000/register', {
+                            username: this.authUsername,
+                            password: this.authPassword
+                        });
+                        alert(response.data.message);
+                        this.isLogin = true;
+                    } catch (error) {
+                        alert(error.response?.data?.error || '注册失败');
+                    }
+                },
+                async login() {
+                    try {
+                        const response = await axios.post('http://localhost:5000/login', {
+                            username: this.authUsername,
+                            password: this.authPassword
+                        });
+                        const token = response.data.access_token;
+                        localStorage.setItem('jwt_token', token);
+                        localStorage.setItem('username', this.authUsername);
+                        axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+                        this.isAuthenticated = true;
+                        this.username = this.authUsername;
+                        this.authUsername = '';
+                        this.authPassword = '';
+                        this.fetchTrackedUsers();
+                    } catch (error) {
+                        alert(error.response?.data?.error || '登录失败');
+                    }
+                },
+                logout() {
+                    localStorage.removeItem('jwt_token');
+                    localStorage.removeItem('username');
+                    delete axios.defaults.headers.common['Authorization'];
+                    this.isAuthenticated = false;
+                    this.username = '';
+                    this.trackedUsers = [];
+                    this.statusData = null;
+                    if (this.intervalId) clearInterval(this.intervalId);
+                },
+                async addTrackedUser() {
+                    if (!this.newTrackUserId) {
+                        alert('请输入 Telegram 用户 ID');
+                        return;
+                    }
+                    try {
+                        const response = await axios.post('http://localhost:5000/track/add', {
+                            telegram_user_id: this.newTrackUserId
+                        });
+                        alert(response.data.message);
+                        this.newTrackUserId = '';
+                        this.fetchTrackedUsers();
+                    } catch (error) {
+                        alert(error.response?.data?.error || '添加失败');
+                    }
+                },
+                async removeTrackedUser(userId) {
+                    try {
+                        const response = await axios.post('http://localhost:5000/track/remove', {
+                            telegram_user_id: userId
+                        });
+                        alert(response.data.message);
+                        this.fetchTrackedUsers();
+                        if (this.statusData && this.statusData.user_id === userId) {
+                            this.statusData = null;
+                            if (this.intervalId) clearInterval(this.intervalId);
+                        }
+                    } catch (error) {
+                        alert(error.response?.data?.error || '删除失败');
+                    }
+                },
+                async fetchTrackedUsers() {
+                    try {
+                        const response = await axios.get('http://localhost:5000/track/list');
+                        this.trackedUsers = response.data.tracked_users;
+                    } catch (error) {
+                        alert(error.response?.data?.error || '获取追踪列表失败');
+                    }
+                },
+                async selectUser(userId) {
+                    try {
+                        const response = await axios.get(`http://localhost:5000/status/${userId}`);
+                        this.statusData = response.data;
+                        if (this.intervalId) clearInterval(this.intervalId);
+                        this.intervalId = setInterval(() => this.selectUser(userId), 60000);
+                    } catch (error) {
+                        alert(error.response?.data?.error || '查询失败');
+                    }
+                },
+                formatDate(timestamp) {
+                    if (!timestamp) return '';
+                    const date = new Date(timestamp);
+                    return date.toLocaleString('zh-CN', { hour12: false });
+                }
+            },
+            beforeDestroy() {
+                if (this.intervalId) clearInterval(this.intervalId);
+            }
+        });
+    </script>
+</body>
+</html>
